@@ -1,0 +1,277 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Enum para tipos de usuários
+enum UserRole {
+  FREE_USER     // usuário com conta gratuita
+  PAID_USER     // usuário pagante
+  TEACHER       // professor
+  ADMIN         // administrador
+}
+
+// Enum para status de pagamento
+enum PaymentStatus {
+  PENDING
+  COMPLETED
+  FAILED
+  CANCELLED
+  REFUNDED
+}
+
+// Enum para tipos de planos
+enum PlanType {
+  QUARTERLY   // trimestral
+  BIANNUAL    // semestral
+  ANNUAL      // anual
+}
+
+// Enum para tipos de questões
+enum QuestionType {
+  MULTIPLE_CHOICE
+  TRUE_FALSE
+  FILL_BLANK
+  AUDIO_COMPREHENSION
+  WRITING
+  SPEAKING
+}
+
+// Enum para níveis de dificuldade
+enum DifficultyLevel {
+  BEGINNER
+  INTERMEDIATE
+  ADVANCED
+}
+
+// Enum para status das aulas
+enum LessonStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+// Tabela de usuários
+model User {
+  id          String   @id @default(cuid())
+  email       String   @unique
+  name        String
+  password    String
+  role        UserRole @default(FREE_USER)
+  avatar      String?
+  isActive    Boolean  @default(true)
+  stripeCustomerId String? @unique
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relacionamentos
+  subscriptions   Subscription[]
+  payments        Payment[]
+  lessonProgress  LessonProgress[]
+  questionAnswers QuestionAnswer[]
+  createdModules  Module[] @relation("CreatedBy")
+  createdLessons  Lesson[] @relation("CreatedBy")
+  
+  @@map("users")
+}
+
+// Tabela de planos de assinatura
+model Plan {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  type        PlanType
+  price       Float    // preço em centavos
+  currency    String   @default("BRL")
+  stripePriceId String @unique
+  
+  // Recursos do plano
+  maxLessonsAccess Int? // null = ilimitado
+  hasQuizAccess    Boolean @default(true)
+  hasProgressTracking Boolean @default(true)
+  
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relacionamentos
+  subscriptions Subscription[]
+  
+  @@map("plans")
+}
+
+// Tabela de assinaturas dos usuários
+model Subscription {
+  id              String    @id @default(cuid())
+  userId          String
+  planId          String
+  stripeSubscriptionId String @unique
+  
+  status          String    // active, cancelled, past_due, etc.
+  currentPeriodStart DateTime
+  currentPeriodEnd   DateTime
+  cancelAtPeriodEnd  Boolean @default(false)
+  
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  // Relacionamentos
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  plan Plan @relation(fields: [planId], references: [id])
+  
+  @@map("subscriptions")
+}
+
+// Tabela de pagamentos
+model Payment {
+  id              String        @id @default(cuid())
+  userId          String
+  stripePaymentIntentId String @unique
+  
+  amount          Float         // valor em centavos
+  currency        String        @default("BRL")
+  status          PaymentStatus
+  description     String?
+  
+  // Metadados do Stripe
+  stripeMetadata  Json?
+  
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  // Relacionamentos
+  user User @relation(fields: [userId], references: [id])
+  
+  @@map("payments")
+}
+
+// Tabela de módulos do curso
+model Module {
+  id          String          @id @default(cuid())
+  title       String
+  description String?
+  orderIndex  Int             // ordem dos módulos
+  level       DifficultyLevel
+  
+  // Controle de acesso
+  isPublic    Boolean         @default(false) // se usuários gratuitos podem acessar
+  
+  createdById String
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+
+  // Relacionamentos
+  createdBy User   @relation("CreatedBy", fields: [createdById], references: [id])
+  lessons   Lesson[]
+  
+  @@map("modules")
+}
+
+// Tabela de aulas
+model Lesson {
+  id          String        @id @default(cuid())
+  moduleId    String
+  title       String
+  description String?
+  content     String?       // conteúdo da aula em HTML/Markdown
+  videoUrl    String?       // URL do vídeo da aula
+  audioUrl    String?       // URL do áudio da aula
+  duration    Int?          // duração em segundos
+  orderIndex  Int           // ordem das aulas dentro do módulo
+  
+  // Controle de acesso
+  isPublic    Boolean       @default(false) // se usuários gratuitos podem acessar
+  status      LessonStatus  @default(DRAFT)
+  
+  createdById String
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  // Relacionamentos
+  module     Module           @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+  createdBy  User             @relation("CreatedBy", fields: [createdById], references: [id])
+  questions  Question[]
+  progress   LessonProgress[]
+  
+  @@map("lessons")
+}
+
+// Tabela de questões/exercícios
+model Question {
+  id          String       @id @default(cuid())
+  lessonId    String?      // pode ser null se for uma questão geral
+  type        QuestionType
+  question    String       // texto da pergunta
+  options     Json?        // opções para múltipla escolha (array de strings)
+  correctAnswer String     // resposta correta
+  explanation String?      // explicação da resposta
+  points      Int          @default(1) // pontuação da questão
+  
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  // Relacionamentos
+  lesson  Lesson?         @relation(fields: [lessonId], references: [id], onDelete: Cascade)
+  answers QuestionAnswer[]
+  
+  @@map("questions")
+}
+
+// Tabela de respostas dos usuários às questões
+model QuestionAnswer {
+  id         String   @id @default(cuid())
+  userId     String
+  questionId String
+  answer     String   // resposta do usuário
+  isCorrect  Boolean
+  points     Int      @default(0)
+  
+  createdAt  DateTime @default(now())
+
+  // Relacionamentos
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  question Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  
+  // Um usuário só pode responder uma questão uma vez
+  @@unique([userId, questionId])
+  @@map("question_answers")
+}
+
+// Tabela de progresso nas aulas
+model LessonProgress {
+  id          String   @id @default(cuid())
+  userId      String
+  lessonId    String
+  completed   Boolean  @default(false)
+  completedAt DateTime?
+  watchTime   Int      @default(0) // tempo assistido em segundos
+  score       Float?   // pontuação nos exercícios da aula
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relacionamentos
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  lesson Lesson @relation(fields: [lessonId], references: [id], onDelete: Cascade)
+  
+  // Um usuário tem apenas um progresso por aula
+  @@unique([userId, lessonId])
+  @@map("lesson_progress")
+}
+
+// Tabela de configurações do sistema (opcional)
+model Setting {
+  id    String @id @default(cuid())
+  key   String @unique
+  value String
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  @@map("settings")
+}
